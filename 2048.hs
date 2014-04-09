@@ -2,9 +2,14 @@
 
 Plays and solves the game 2048
 
-Tested with Hugs 98
+In this implementation the randomized aspects of the game have been removed.
 
 --}
+import Data.Time
+import Data.List
+import Data.Ord
+import Data.Maybe
+import Control.Monad
 
 emptyGrid :: [Int]
 emptyGrid = [ 0 | _ <- [0..15] ]
@@ -20,32 +25,27 @@ printGrid xs 			= putStrLn $ gridToString xs
 -- Skip n empty tiles before inserting
 addTile :: Int -> [Int] -> [Int] 
 addTile 0 (0:grid)		= 2 : grid
-addTile n [] 			= []
+addTile _ [] 			= []
 addTile n (0:grid)		= (0 : addTile (n-1) grid)
 addTile n (cell:grid)	= cell : addTile n grid
-
--- Insert multiple tiles at once
-addTiles :: [Int] -> [Int] -> [Int]
-addTiles [] grid 		= grid
-addTiles (n:ns) grid 	= addTiles ns (addTile n grid)
 
 -- For one row of the grid, push the non-empty tiles together
 -- e.g. [0,2,0,2] becomes [2,2,0,0]
 moveRow :: [Int] -> [Int]
-moveRow [] 					= []
-moveRow (0:xs) 				= moveRow xs ++ [0]
-moveRow (x:xs)				= x : moveRow xs
+moveRow [] 				= []
+moveRow (0:xs) 			= moveRow xs ++ [0]
+moveRow (x:xs)			= x : moveRow xs
 
 -- For one row of the grid, do the merge (cells of same value merge)
 -- e.g. [2,2,4,4] becomes [4,8,0,0]
 -- [2,4,2,2] becomes [2,4,4,0]
 
 mergeRow :: [Int] -> [Int]
-mergeRow [] 				= []
-mergeRow (a:[]) 			= [a]
-mergeRow (a:b:xs) 			
-	| a == b 				= (a + b) : (mergeRow xs) ++ [0]
-	| otherwise				= a : mergeRow (b:xs)
+mergeRow [] 			= []
+mergeRow (a:[]) 		= [a]
+mergeRow (a:b:xs)
+	| a == b 			= (a + b) : (mergeRow xs) ++ [0]
+	| otherwise			= a : mergeRow (b:xs)
 
 -- Rotate the grid to be able to do vertical moving/merging
 -- e.g. [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
@@ -53,72 +53,92 @@ mergeRow (a:b:xs)
 rotate :: [Int] -> [Int]
 rotate grid = [ grid !! (a + 4 * b) | a <- [0..3], b <- [0..3] ]
 
--- Use the definitions above to do the moves
-move :: Int -> [Int] -> [Int]
-move _ [] 				= []
--- 0=Left, 1=Right, 2=Up, 3=Down
-move 0 grid				= mergeRow (moveRow (take 4 grid)) ++ move 0 (drop 4 grid) 
-move 1 grid 			= reverse (move 0 (reverse grid))
-move 2 grid 			= rotate (move 0 (rotate grid))
-move 3 grid 			= reverse (move 2 (reverse grid))
+data Move = MoveLeft | MoveRight | MoveUp | MoveDown
+	deriving (Show)
 
--- Mapping of move-codes to text
-moveToString :: Int -> String
-moveToString n = ["Left", "Right", "Up", "Down"] !! n
+allMoves :: [Move]
+allMoves = [MoveLeft, MoveRight, MoveUp, MoveDown]
+
+-- Use the definitions above to do the moves
+doMove :: Move -> [Int] -> [Int]
+doMove _ [] 			= []
+-- 0=Left, 1=Right, 2=Up, 3=Down
+doMove MoveLeft grid	= mergeRow (moveRow (take 4 grid)) ++ doMove MoveLeft (drop 4 grid) 
+doMove MoveRight grid 	= reverse (doMove MoveLeft (reverse grid))
+doMove MoveUp grid 		= rotate (doMove MoveLeft (rotate grid))
+doMove MoveDown grid 	= reverse (doMove MoveUp (reverse grid))
 
 -- Take a turn, i.e. make a move and add a tile
-takeTurn :: Int -> [Int] -> [Int]
-takeTurn n grid
-	| n == -1 				= []
-	| newGrid /= grid 		= newGrid
-	| otherwise 			= []
-	where newGrid = addTile 0 (move n grid)
+-- Return Nothing if the move is not legal
+takeTurn :: Move -> [Int] -> Maybe [Int]
+takeTurn move grid
+	| movedGrid == grid	= Nothing
+	| otherwise 		= Just $ addTile 0 movedGrid
+	where movedGrid = doMove move grid
 
-maxInList :: Ord a => [a] -> a
-maxInList (x:xs) = maxInList_ x xs 
-maxInList_ :: Ord a => a -> [a] -> a
-maxInList_ m [] = m
-maxInList_ m (x:xs) 	= maxInList_ (max m x) xs
+-- Return the best move
+-- Will throw an error if there are no valid moves
+bestMove :: Int -> [Int] -> Move
+bestMove depth grid 	= snd bestValueMove
+	where 
+		valueMoves	 	= [ (value, move) |
+							move	<- allMoves,
+							newGrid <- [ takeTurn move grid ],
+							value 	<- [ gridValue depth (fromJust newGrid) ],
+							newGrid	/= Nothing ]
+		bestValueMove 	= maximumBy (comparing fst) valueMoves
 
--- Find highest tuple in list of pairs.
--- On equality, the first wins
-maxTuple :: [(Int,Int)] -> Int
-maxTuple [] 				= -1
-maxTuple (x:xs)				= secondFromTuple $ maxTuple_ x xs
-secondFromTuple :: (a,a) -> a
-secondFromTuple (x,y) 		= y
-maxTuple_ :: Ord a => (a,a) -> [(a,a)] -> (a,a)
-maxTuple_ x [] 				= x
-maxTuple_ (a,b) ((y,z):xs)
-	| a >= y 				= maxTuple_ (a,b) xs
-	| otherwise 			= maxTuple_ (y,z) xs
-
--- Return the best possible move
--- TODO: can the seemingly redundancy be eliminated?
-bestMove :: Int -> [Int] -> Int
-bestMove depth grid 		= maxTuple [ (gridValue depth (takeTurn x grid), x) | x <- [0..3], takeTurn x grid /= [] ]
-
+-- <<< I decided not to return Nothing on a dead end, because then we can no longer
+-- distinguish dead ends at different depths from eachother. >>>
+--
+-- Return the value of the grid,
+-- + 1 for each depth traversed
+-- -100 if a Game Over position is reached
 gridValue :: Int -> [Int] -> Int
-gridValue _ [] = -1
-gridValue 0 grid = length $ filter (==0) grid
-gridValue depth grid = maxInList [ gridValue (depth-1) (takeTurn x grid) | x <- [0..3] ]
+gridValue depth grid
+	| depth == 0		= length $ filter (==0) grid
+	| values == [] 		= -100
+	| otherwise 		= maximum values
+	where
+		values 			= [ value | 
+							move	<- allMoves,
+							newGrid	<- [ takeTurn move grid ],
+							value 	<- [ gridValue (depth-1) (fromJust newGrid) + 1],
+							newGrid /= Nothing ]
+
+gameOver :: [Int] -> Bool
+gameOver grid 		= all (==Nothing) ([ takeTurn move grid | move <- allMoves ])
 
 -- Take turns and prints the result of each move to the console until no more moves are possible
--- n counts the moves, nplus is used to track which moves have been tried
--- Should normally be called with n=0 and nplus=0
-takeTurns :: Int -> Int -> [Int] -> IO()
-takeTurns depth n grid 			= do
-	let newGrid 				= takeTurn (bestMove depth grid) grid
-	if newGrid /= []
-		then do
-			putStrLn $ "Move " ++ (show n)
-			putStrLn $ gridToString newGrid
-			takeTurns depth (n+1) newGrid
-		else 
-			putStrLn "Game Over"
+-- n counts the moves
+-- Should normally be called with n=0
+takeTurns :: Bool -> Int -> Int -> [Int] -> IO()
+takeTurns isVerbose depth n grid = do
+	when (isVerbose || isGameOver) 		$ putStrLn $ gridToString grid ++ "\n# " ++ (show n)
+	when (isVerbose && not isGameOver) 	$ putStrLn $ (show move)
+	when (not isGameOver) 				$ takeTurns isVerbose depth (n+1) newGrid
+	where
+		isGameOver 	= gameOver grid
+		move 		= bestMove depth grid
+		newGrid 	= fromJust $ takeTurn move grid
 
+-- Solves at depth and only prints # of moves and final grid
+solveSilent :: Int -> IO()
+solveSilent depth = takeTurns False depth 0 (addTile 0 emptyGrid)
+
+-- Solves at depth and prints all boards and moves
 solve :: Int -> IO()
-solve depth = takeTurns depth 0 emptyGrid
+solve depth = takeTurns True depth 0 (addTile 0 emptyGrid)
 
-main = do
-	solve 4
+-- Solve and time the solver for multiple depth settings from start to end
+solveDepths :: Int -> Int -> IO()
+solveDepths start end
+	| start <= end = do
+			startTime <- getCurrentTime
+			solveSilent start
+			stopTime <- getCurrentTime
+			putStrLn $ "Depth " ++ (show start) ++ " done in " ++ (show $ diffUTCTime stopTime startTime)
+			solveDepths (start+1) end
+	| otherwise	= putStrLn "-"
+
+main = solveDepths 1 3 
